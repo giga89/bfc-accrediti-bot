@@ -114,39 +114,31 @@ def check_match_page(url):
     
     extracted_info = None
     
+    import re
+    
     for section in sections:
-        # Often the content is the immediate next sibling or in the same container.
-        # Let's try to get the parent container's text or next siblings.
         parent = section.parent
         full_text = parent.get_text(separator='\n', strip=True)
         
-        # We need the specific paragraph mentioning "Le richieste devono pervenire EXCLUSIVAMENTE"
         if "esclusivamente" in full_text.lower() or "disabilità" in full_text.lower():
-            # Let's extract paragraphs following this header
-            info_parts = []
-            for sibling in section.find_next_siblings():
-                text = sibling.get_text(strip=True)
-                if text:
-                    info_parts.append(text)
-                if len(info_parts) >= 3 or "Bologna for community" in text: # stop heuristic
-                    break
+            # Try to find the date/time phrase using regex for a more concise message
+            # e.g., "Le richieste devono pervenire ESCLUSIVAMENTE DALLE ORE 10 ALLE ORE 17 del 5 marzo"
+            match = re.search(r'(?i)esclusivamente\s+(.*?)(?:\n|\.)', full_text)
             
-            if info_parts:
-                extracted_info = "\n\n".join(info_parts)
-                # Ensure we got meaningful info
-                if len(extracted_info) > 50:
-                    break
+            if match:
+                date_info = match.group(1).strip()
+                extracted_info = f"🕒 <b>{date_info.capitalize()}</b>"
+                break
                 
-            # Fallback if sibling approach fails: get text from next p tags nearby
-            else:
-               # Just use the matched tag's own text if it's long enough, or parent
-               if len(full_text) > 100:
-                   # Try to isolate the relevant part
-                   lines = full_text.split('\n')
-                   rel_lines = [l for l in lines if "esclusivamente" in l.lower() or "richieste" in l.lower() or "accredito" in l.lower()]
-                   if rel_lines:
-                       extracted_info = "\n".join(rel_lines)
-                       break
+            # Fallback if regex doesn't match perfectly, grab the relevant line
+            lines = full_text.split('\n')
+            rel_lines = [l for l in lines if "esclusivamente" in l.lower() or "richieste" in l.lower()]
+            if rel_lines:
+                extracted_info = "\n".join(rel_lines)
+                # Keep it short
+                if len(extracted_info) > 150:
+                    extracted_info = extracted_info[:147] + "..."
+                break
     
     return extracted_info
 
