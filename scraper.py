@@ -188,9 +188,13 @@ def main():
         match_data = check_match_page(match_url)
         if match_data:
             info = match_data["disability_info"]
-            # Create a simple hash of the info to detect changes
             content_hash = hashlib.md5(info.encode('utf-8')).hexdigest()
-            match_id = match_url.rstrip('/').split('/')[-1].replace('?info=ticket','')
+            # Use the URL path without query string as stable unique key
+            match_id = match_url.split('?')[0].strip('/')
+            # Fallback: use full url if path is empty
+            if not match_id:
+                match_id = match_url
+            print(f"Match key: '{match_id}' | Hash: {content_hash}")
             
             if match_id not in history or history[match_id] != content_hash:
                 print(f"New or updated info found for {match_id}!")
