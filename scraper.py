@@ -112,35 +112,69 @@ def check_match_page(url):
     # Find headers or divs containing this text
     sections = soup.find_all(lambda tag: tag.name in ['h1', 'h2', 'h3', 'h4', 'div', 'p'] and target_text.lower() in tag.get_text().lower())
     
-    extracted_info = None
-    
     import re
     
-    for section in sections:
-        parent = section.parent
-        full_text = parent.get_text(separator='\n', strip=True)
-        
-        if "esclusivamente" in full_text.lower() or "disabilità" in full_text.lower():
-            # Try to find the date/time phrase using regex for a more concise message
-            # e.g., "Le richieste devono pervenire ESCLUSIVAMENTE DALLE ORE 10 ALLE ORE 17 del 5 marzo"
-            match = re.search(r'(?i)esclusivamente\s+(.*?)(?:\n|\.)', full_text)
+    match_data = {
+        "disability_info": None,
+        "match_date": "Data non trovata",
+        "teams": "Bologna vs Avversario",
+        "sale_date": "Non specificata"
+    }
+
+    # Extract teams and date from the header/title
+    title_tag = soup.find('title')
+    if title_tag:
+        title_text = title_tag.get_text()
+        teams_match = re.search(r'(.*?)\s*–', title_text)
+        if teams_match:
+            match_data["teams"] = teams_match.group(1).strip()
             
-            if match:
-                date_info = match.group(1).strip()
-                extracted_info = f"🕒 <b>{date_info.capitalize()}</b>"
-                break
-                
-            # Fallback if regex doesn't match perfectly, grab the relevant line
-            lines = full_text.split('\n')
-            rel_lines = [l for l in lines if "esclusivamente" in l.lower() or "richieste" in l.lower()]
-            if rel_lines:
-                extracted_info = "\n".join(rel_lines)
-                # Keep it short
-                if len(extracted_info) > 150:
-                    extracted_info = extracted_info[:147] + "..."
-                break
+    date_patterns = [r'(Dom|Lun|Mar|Mer|Gio|Ven|Sab)\s+\d+\s+(Gennaio|Febbraio|Marzo|Aprile|Maggio|Giugno|Luglio|Agosto|Settembre|Ottobre|Novembre|Dicembre)\s*-\s*\d+:\d+',
+                     r'\d{1,2}\s+(Gennaio|Febbraio|Marzo|Aprile|Maggio|Giugno|Luglio|Agosto|Settembre|Ottobre|Novembre|Dicembre)\s+\d{4}']
     
-    return extracted_info
+    for string in soup.stripped_strings:
+        for pattern in date_patterns:
+            if re.search(pattern, string, re.IGNORECASE):
+                match_data["match_date"] = string
+                break
+        if match_data["match_date"] != "Data non trovata":
+            break
+
+    # Extract raw text for robust regex finding
+    raw_text = soup.get_text(separator=' ', strip=True)
+
+    # Find General Sale start date
+    # Usually format is "Dalle ore X del Y la vendita è aperta a tutti" or similar
+    sale_match = re.search(r'(?i)(dalle\s+(?:ore\s+)?\d+.*?vendita\s+.*?(?:aperta\s+a\s+tutti|libera))', raw_text)
+    if sale_match:
+        # Clean it up to be concise
+        s = sale_match.group(1)
+        # Try to just get the date part
+        short_s = re.search(r'(?i)(dalle.*?del\s*\d{1,2}(?:/\d{1,2}|\s+[a-z]+))', s)
+        if short_s:
+            match_data["sale_date"] = short_s.group(1).strip().capitalize()
+        else:
+            match_data["sale_date"] = s[:80].capitalize() + "..."
+    else:
+        # Fallback sale regex
+        sale_match_alt = re.search(r'(?i)(dal\s+\d{1,2}(?:/\d{1,2}|\s+[a-z]+).*?vendita)', raw_text)
+        if sale_match_alt:
+            match_data["sale_date"] = sale_match_alt.group(1).strip().capitalize()
+    
+    # Find Disability Info
+    # Look for the exact phrasing "Le richieste devono pervenire ESCLUSIVAMENTE DALLE ORE 10 ALLE ORE 17 del 5 marzo"
+    disability_match = re.search(r'(?i)(le richieste devono pervenire.*?)(?:\.\s|Si ricorda|$)', raw_text)
+    if disability_match:
+        dis_info = disability_match.group(1).strip()
+        # Clean up any trailing text that might be too long
+        if len(dis_info) > 130:
+            # Cut off at the first period if it went too far
+            dis_info = dis_info.split('.')[0]
+        
+        # Format explicitly
+        match_data["disability_info"] = dis_info.capitalize()
+
+    return match_data if match_data["disability_info"] else None
 
 def main():
     history = get_gist_content()
@@ -151,8 +185,9 @@ def main():
     new_notifications = 0
     
     for match_url in matches:
-        info = check_match_page(match_url)
-        if info:
+        match_data = check_match_page(match_url)
+        if match_data:
+            info = match_data["disability_info"]
             # Create a simple hash of the info to detect changes
             content_hash = hashlib.md5(info.encode('utf-8')).hexdigest()
             match_id = match_url.rstrip('/').split('/')[-1].replace('?info=ticket','')
@@ -161,8 +196,17 @@ def main():
                 print(f"New or updated info found for {match_id}!")
                 
                 # Format message
-                match_name_display = match_id.replace('-', ' ').title()
-                msg = f"🟢 <b>Nuove info Accrediti Disabili!</b>\n\n⚽ <b>Partita:</b> {match_name_display}\n🔗 <a href='{match_url}'>Link Ufficiale</a>\n\n<b>Dettagli:</b>\n{info}"
+                match_name_display = match_data["teams"]
+                msg = f"""🟢 <b>Nuove info Accrediti Disabili!</b>
+
+⚽ <b>Partita:</b> {match_name_display}
+📅 <b>Data Partita:</b> {match_data['match_date']}
+🎫 <b>Inizio Vendita Libera:</b> {match_data['sale_date']}
+
+♿ <b>Info Accrediti Disabili:</b>
+🕒 Le richieste devono pervenire esclusivamente {info}
+
+🔗 <a href='{match_url}'>Link Ufficiale</a>"""
                 
                 send_telegram_message(msg)
                 history[match_id] = content_hash
