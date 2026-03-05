@@ -1,0 +1,31 @@
+name: Run BFC Scraper
+
+on:
+  schedule:
+    # Run every 4 hours (e.g., 0, 4, 8, 12, 16, 20)
+    - cron: '0 */4 * * *'
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+
+    - name: Run Scraper
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        GHA_GIST_TOKEN: ${{ secrets.GHA_GIST_TOKEN }}
+        GIST_ID: ${{ secrets.GIST_ID }}
+      run: python scraper.py
