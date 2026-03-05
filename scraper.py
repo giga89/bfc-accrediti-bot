@@ -1,7 +1,10 @@
 import os
+import re
 import json
 import requests
 import hashlib
+from datetime import datetime, timedelta
+from urllib.parse import quote
 from bs4 import BeautifulSoup
 
 # Config
@@ -12,9 +15,124 @@ MATCH_BASE_URL = "https://www.bolognafc.it/match/"
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GHA_GIST_TOKEN = os.environ.get("GHA_GIST_TOKEN")
-GIST_ID = os.environ.get("GIST_ID")  # Optional: we can create it if not provided, but usually better to provide
+GIST_ID = os.environ.get("GIST_ID")
 
 GIST_FILENAME = "history.json"
+
+# Italian month names -> number
+MONTHS_IT = {
+    'gennaio': 1, 'febbraio': 2, 'marzo': 3, 'aprile': 4,
+    'maggio': 5, 'giugno': 6, 'luglio': 7, 'agosto': 8,
+    'settembre': 9, 'ottobre': 10, 'novembre': 11, 'dicembre': 12
+}
+
+def parse_italian_datetime(text):
+    """
+    Try to extract a datetime from an Italian text string like:
+      "dalle ore 10 alle ore 17 del 5 marzo"
+      "dal 6/3 dalle ore 14"
+    Returns a datetime object or None.
+    """
+    if not text:
+        return None
+    t = text.lower()
+    year = datetime.now().year
+
+    day, month = None, None
+
+    # Pattern: "del 5/3" or "dal 5/3"
+    m = re.search(r'(?:del|dal)\s+(\d{1,2})\s*/\s*(\d{1,2})', t)
+    if m:
+        day, month = int(m.group(1)), int(m.group(2))
+
+    # Pattern: "del 5 marzo" or "dal 5 marzo"
+    if day is None:
+        months_pattern = '|'.join(MONTHS_IT.keys())
+        m = re.search(rf'(?:del|dal)\s+(\d{{1,2}})\s+({months_pattern})', t)
+        if m:
+            day = int(m.group(1))
+            month = MONTHS_IT[m.group(2)]
+
+    # Fallback: just "5 marzo"
+    if day is None:
+        months_pattern = '|'.join(MONTHS_IT.keys())
+        m = re.search(rf'(\d{{1,2}})\s+({months_pattern})', t)
+        if m:
+            day = int(m.group(1))
+            month = MONTHS_IT[m.group(2)]
+
+    if day is None or month is None:
+        return None
+
+    # Extract hour: "dalle ore 10" or "ore 10"
+    time_match = re.search(r'(?:dalle?\s+)?(?:ore\s+)(\d{1,2})(?::(\d{2}))?', t)
+    hour = int(time_match.group(1)) if time_match else 10
+    minute = int(time_match.group(2)) if (time_match and time_match.group(2)) else 0
+
+    try:
+        dt = datetime(year, month, day, hour, minute)
+        # If the date has already passed this year, try next year
+        if dt < datetime.now() - timedelta(days=1):
+            dt = datetime(year + 1, month, day, hour, minute)
+        return dt
+    except ValueError:
+        return None
+
+
+def make_gcal_url(title, start_dt, duration_minutes=60, description=""):
+    """
+    Generate a Google Calendar 'add event' URL.
+    The event will have a popup reminder 30 minutes before start.
+    """
+    fmt = "%Y%m%dT%H%M%S"
+    end_dt = start_dt + timedelta(minutes=duration_minutes)
+    params = (
+        f"action=TEMPLATE"
+        f"&text={quote(title)}"
+        f"&dates={start_dt.strftime(fmt)}/{end_dt.strftime(fmt)}"
+        f"&details={quote(description)}"
+    )
+    return f"https://calendar.google.com/calendar/render?{params}"
+
+
+def build_calendar_links(match_data, match_url):
+    """
+    Build Google Calendar links for:
+      1. Disability accreditation window (30 min reminder before opening)
+      2. General ticket sale (30 min reminder before opening)
+    Returns a dict with 'disability_cal' and 'sale_cal' keys (may be None).
+    """
+    links = {"disability_cal": None, "sale_cal": None}
+    teams = match_data.get("teams", "Bologna")
+
+    # --- Disability accreditation ---
+    dis_info = match_data.get("disability_info", "")
+    dis_dt = parse_italian_datetime(dis_info)
+    if dis_dt:
+        reminder_dt = dis_dt - timedelta(minutes=30)
+        title = f"♿ Accrediti Disabili – {teams}"
+        desc = (
+            f"Apertura accrediti disabili ore {dis_dt.strftime('%H:%M')}\n"
+            f"Info: {match_url}"
+        )
+        links["disability_cal"] = make_gcal_url(title, reminder_dt, duration_minutes=30, description=desc)
+        print(f"Calendar disability event: {dis_dt}")
+
+    # --- General ticket sale ---
+    sale_text = match_data.get("sale_date", "")
+    sale_dt = parse_italian_datetime(sale_text)
+    if sale_dt:
+        reminder_dt = sale_dt - timedelta(minutes=30)
+        title = f"🎫 Vendita Biglietti – {teams}"
+        desc = (
+            f"Apertura vendita biglietti ore {sale_dt.strftime('%H:%M')}\n"
+            f"Info: {match_url}"
+        )
+        links["sale_cal"] = make_gcal_url(title, reminder_dt, duration_minutes=30, description=desc)
+        print(f"Calendar sale event: {sale_dt}")
+
+    return links
+
 
 def send_telegram_message(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -25,7 +143,8 @@ def send_telegram_message(text):
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
-        "parse_mode": "HTML"
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
     }
     try:
         response = requests.post(url, json=payload)
@@ -89,7 +208,6 @@ def get_upcoming_matches():
     soup = BeautifulSoup(response.text, 'html.parser')
     
     match_links = []
-    # Find links that go to match details with '?info=ticket'
     for a in soup.find_all('a', href=True):
         href = a['href']
         if '/match/' in href and 'info=ticket' in href:
@@ -104,15 +222,8 @@ def check_match_page(url):
     response.raise_for_status()
     soup = BeautifulSoup(response.text, 'html.parser')
     
-    # Look for the section title. In Markdown we found "Accrediti per persone con disabilità"
-    # In HTML it might be an h2, h3, or text within a div. Let's look for the text.
-    
     target_text = "Accrediti per persone con disabilità"
-    
-    # Find headers or divs containing this text
     sections = soup.find_all(lambda tag: tag.name in ['h1', 'h2', 'h3', 'h4', 'div', 'p'] and target_text.lower() in tag.get_text().lower())
-    
-    import re
     
     match_data = {
         "disability_info": None,
@@ -121,7 +232,6 @@ def check_match_page(url):
         "sale_date": "Non specificata"
     }
 
-    # Extract teams and date from the header/title
     title_tag = soup.find('title')
     if title_tag:
         title_text = title_tag.get_text()
@@ -140,38 +250,26 @@ def check_match_page(url):
         if match_data["match_date"] != "Data non trovata":
             break
 
-    # Extract raw text for robust regex finding
     raw_text = soup.get_text(separator=' ', strip=True)
 
-    # Find General Sale start date
-    # Usually format is "Dalle ore X del Y la vendita è aperta a tutti" or similar
     sale_match = re.search(r'(?i)(dalle\s+(?:ore\s+)?\d+.*?vendita\s+.*?(?:aperta\s+a\s+tutti|libera))', raw_text)
     if sale_match:
-        # Clean it up to be concise
         s = sale_match.group(1)
-        # Try to just get the date part
         short_s = re.search(r'(?i)(dalle.*?del\s*\d{1,2}(?:/\d{1,2}|\s+[a-z]+))', s)
         if short_s:
             match_data["sale_date"] = short_s.group(1).strip().capitalize()
         else:
             match_data["sale_date"] = s[:80].capitalize() + "..."
     else:
-        # Fallback sale regex
         sale_match_alt = re.search(r'(?i)(dal\s+\d{1,2}(?:/\d{1,2}|\s+[a-z]+).*?vendita)', raw_text)
         if sale_match_alt:
             match_data["sale_date"] = sale_match_alt.group(1).strip().capitalize()
     
-    # Find Disability Info
-    # Look for the exact phrasing "Le richieste devono pervenire ESCLUSIVAMENTE DALLE ORE 10 ALLE ORE 17 del 5 marzo"
     disability_match = re.search(r'(?i)(le richieste devono pervenire.*?)(?:\.\s|Si ricorda|$)', raw_text)
     if disability_match:
         dis_info = disability_match.group(1).strip()
-        # Clean up any trailing text that might be too long
         if len(dis_info) > 130:
-            # Cut off at the first period if it went too far
             dis_info = dis_info.split('.')[0]
-        
-        # Format explicitly
         match_data["disability_info"] = dis_info.capitalize()
 
     return match_data if match_data["disability_info"] else None
@@ -191,7 +289,6 @@ def main():
             content_hash = hashlib.md5(info.encode('utf-8')).hexdigest()
             # Use the URL path without query string as stable unique key
             match_id = match_url.split('?')[0].strip('/')
-            # Fallback: use full url if path is empty
             if not match_id:
                 match_id = match_url
             print(f"Match key: '{match_id}' | Hash: {content_hash}")
@@ -199,8 +296,18 @@ def main():
             if match_id not in history or history[match_id] != content_hash:
                 print(f"New or updated info found for {match_id}!")
                 
-                # Format message
                 match_name_display = match_data["teams"]
+
+                # Build calendar links
+                cal = build_calendar_links(match_data, match_url)
+                cal_section = ""
+                if cal["disability_cal"] or cal["sale_cal"]:
+                    cal_section = "\n\n📅 <b>Aggiungi al calendario</b> (promemoria 30 min prima):"
+                    if cal["disability_cal"]:
+                        cal_section += f'\n♿ <a href="{cal["disability_cal"]}">📆 Accrediti Disabili</a>'
+                    if cal["sale_cal"]:
+                        cal_section += f'\n🎫 <a href="{cal["sale_cal"]}">📆 Vendita Biglietti</a>'
+
                 msg = f"""🟢 <b>Nuove info Accrediti Disabili!</b>
 
 ⚽ <b>Partita:</b> {match_name_display}
@@ -208,7 +315,7 @@ def main():
 🎫 <b>Inizio Vendita Libera:</b> {match_data['sale_date']}
 
 ♿ <b>Info Accrediti Disabili:</b>
-🕒 Le richieste devono pervenire esclusivamente {info}
+🕒 Le richieste devono pervenire esclusivamente {info}{cal_section}
 
 🔗 <a href='{match_url}'>Link Ufficiale</a>"""
                 
