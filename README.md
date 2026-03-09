@@ -38,7 +38,7 @@ Bologna FC Website ──► Scraper (Python) ──► Telegram Notification
 ## 📩 Esempio di notifica
 
 ```
-🟢 Nuove info Accrediti Disabili!
+🟢 Nuove info Accrediti!
 
 ⚽ Partita: Bologna - Roma
 📅 Data Partita: Dom 9 Marzo - 20:45

@@ -308,7 +308,7 @@ def main():
                     if cal["sale_cal"]:
                         cal_section += f'\n🎫 <a href="{cal["sale_cal"]}">📆 Vendita Biglietti</a>'
 
-                msg = f"""🟢 <b>Nuove info Accrediti Disabili!</b>
+                msg = f"""🟢 <b>Nuove info Accrediti!</b>
 
 ⚽ <b>Partita:</b> {match_name_display}
 📅 <b>Data Partita:</b> {match_data['match_date']}
