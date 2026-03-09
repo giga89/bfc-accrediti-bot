@@ -40,15 +40,15 @@ def parse_italian_datetime(text):
 
     day, month = None, None
 
-    # Pattern: "del 5/3" or "dal 5/3"
-    m = re.search(r'(?:del|dal)\s+(\d{1,2})\s*/\s*(\d{1,2})', t)
+    # Pattern: "del 5/3" or "dal 5/3" or "di lunedì 16/03" or "di 5/3"
+    m = re.search(r'(?:del|dal|di)\s+(?:(?:luned|marted|mercoled|gioved|venerd|sabat|domenic)\S*\s+)?(\d{1,2})\s*/\s*(\d{1,2})(?:\s*/\s*\d{2,4})?', t)
     if m:
         day, month = int(m.group(1)), int(m.group(2))
 
-    # Pattern: "del 5 marzo" or "dal 5 marzo"
+    # Pattern: "del 5 marzo" or "dal 5 marzo" or "di lunedì 5 marzo"
     if day is None:
         months_pattern = '|'.join(MONTHS_IT.keys())
-        m = re.search(rf'(?:del|dal)\s+(\d{{1,2}})\s+({months_pattern})', t)
+        m = re.search(rf'(?:del|dal|di)\s+(?:(?:luned|marted|mercoled|gioved|venerd|sabat|domenic)\S*\s+)?(\d{{1,2}})\s+({months_pattern})', t)
         if m:
             day = int(m.group(1))
             month = MONTHS_IT[m.group(2)]
@@ -261,9 +261,40 @@ def check_match_page(url):
         else:
             match_data["sale_date"] = s[:80].capitalize() + "..."
     else:
-        sale_match_alt = re.search(r'(?i)(dal\s+\d{1,2}(?:/\d{1,2}|\s+[a-z]+).*?vendita)', raw_text)
-        if sale_match_alt:
-            match_data["sale_date"] = sale_match_alt.group(1).strip().capitalize()
+        # Try "prevendita comincia/inizia alle ore X del dd/mm"
+        sale_match_prev = re.search(
+            r'(?i)(?:prevendita|vendita)\s+(?:comincia|inizia|parte|apre)\s+'
+            r'(?:alle\s+ore\s+\d+\s+)?(?:del\s+)?(\d{1,2}/\d{1,2}(?:/\d{2,4})?)',
+            raw_text
+        )
+        if sale_match_prev:
+            # Extract a broader context for display
+            full = re.search(
+                r'(?i)((?:prevendita|vendita)\s+(?:comincia|inizia|parte|apre)\s+'
+                r'(?:alle\s+ore\s+\d+\s+)?(?:del\s+)?\d{1,2}/\d{1,2}(?:/\d{2,4})?)',
+                raw_text
+            )
+            if full:
+                match_data["sale_date"] = full.group(1).strip().capitalize()
+        else:
+            # Try "inizio della prevendita è alle ore X del dd/mm"
+            sale_match_inizio = re.search(
+                r'(?i)(?:inizio\s+(?:della\s+)?(?:prevendita|vendita)\s+'
+                r'(?:è|e)\s+(?:alle\s+ore\s+\d+\s+)?(?:del\s+)?)(\d{1,2}/\d{1,2}(?:/\d{2,4})?)',
+                raw_text
+            )
+            if sale_match_inizio:
+                full = re.search(
+                    r'(?i)(inizio\s+(?:della\s+)?(?:prevendita|vendita)\s+'
+                    r'(?:è|e)\s+(?:alle\s+ore\s+\d+\s+)?(?:del\s+)?\d{1,2}/\d{1,2}(?:/\d{2,4})?)',
+                    raw_text
+                )
+                if full:
+                    match_data["sale_date"] = full.group(1).strip().capitalize()
+            else:
+                sale_match_alt = re.search(r'(?i)(dal\s+\d{1,2}(?:/\d{1,2}|\s+[a-z]+).*?vendita)', raw_text)
+                if sale_match_alt:
+                    match_data["sale_date"] = sale_match_alt.group(1).strip().capitalize()
     
     disability_match = re.search(r'(?i)(le richieste devono pervenire.*?)(?:\.\s|Si ricorda|$)', raw_text)
     if disability_match:
