@@ -210,7 +210,7 @@ def get_upcoming_matches():
     match_links = []
     for a in soup.find_all('a', href=True):
         href = a['href']
-        if '/match/' in href and 'info=ticket' in href:
+        if '/match/' in href:
             if href not in match_links:
                 match_links.append(href)
                 
