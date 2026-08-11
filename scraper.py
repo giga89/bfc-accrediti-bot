@@ -10,6 +10,10 @@ from bs4 import BeautifulSoup
 # Config
 BASE_URL = "https://www.bolognafc.it/biglietti/"
 MATCH_BASE_URL = "https://www.bolognafc.it/match/"
+REQUEST_TIMEOUT = 15
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 
 # Secrets from Environment
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -147,7 +151,7 @@ def send_telegram_message(text):
         "disable_web_page_preview": True
     }
     try:
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         print("Notification sent successfully.")
     except Exception as e:
@@ -159,12 +163,13 @@ def get_gist_content():
     
     headers = {
         "Authorization": f"token {GHA_GIST_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
+        "Accept": "application/vnd.github.v3+json",
+        **HEADERS
     }
     url = f"https://api.github.com/gists/{GIST_ID}"
     
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
         if response.status_code == 200:
             gist_data = response.json()
             if GIST_FILENAME in gist_data.get("files", {}):
@@ -182,7 +187,8 @@ def update_gist_content(new_data):
 
     headers = {
         "Authorization": f"token {GHA_GIST_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
+        "Accept": "application/vnd.github.v3+json",
+        **HEADERS
     }
     url = f"https://api.github.com/gists/{GIST_ID}"
     
@@ -195,7 +201,7 @@ def update_gist_content(new_data):
     }
     
     try:
-        response = requests.patch(url, headers=headers, json=payload)
+        response = requests.patch(url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         print("Gist updated successfully.")
     except Exception as e:
@@ -203,23 +209,31 @@ def update_gist_content(new_data):
 
 def get_upcoming_matches():
     print(f"Fetching {BASE_URL}")
-    response = requests.get(BASE_URL)
+    response = requests.get(BASE_URL, headers=HEADERS, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, 'html.parser')
     
     match_links = []
     for a in soup.find_all('a', href=True):
-        href = a['href']
-        if '/match/' in href:
-            if href not in match_links:
-                match_links.append(href)
+        href = a['href'].strip()
+        # Only consider links belonging to Bologna FC match pages
+        if href.startswith(MATCH_BASE_URL) or (href.startswith('/match/')):
+            full_url = href if href.startswith('http') else f"https://www.bolognafc.it{href}"
+            clean_url = full_url.split('?')[0].rstrip('/') + '/'
+            if clean_url not in match_links:
+                match_links.append(clean_url)
                 
     return match_links
 
 def check_match_page(url):
     print(f"Checking match info at {url}")
-    response = requests.get(url)
-    response.raise_for_status()
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"Error fetching match page {url}: {e}")
+        return None
+
     soup = BeautifulSoup(response.text, 'html.parser')
     
     target_text = "Accrediti per persone con disabilità"
@@ -319,7 +333,7 @@ def main():
             info = match_data["disability_info"]
             content_hash = hashlib.md5(info.encode('utf-8')).hexdigest()
             # Use the URL path without query string as stable unique key
-            match_id = match_url.split('?')[0].strip('/')
+            match_id = match_url.split('?')[0].rstrip('/')
             if not match_id:
                 match_id = match_url
             print(f"Match key: '{match_id}' | Hash: {content_hash}")
@@ -328,6 +342,12 @@ def main():
                 print(f"New or updated info found for {match_id}!")
                 
                 match_name_display = match_data["teams"]
+
+                # Clean info string for display if it already starts with the introductory text
+                info_display = info
+                prefix_to_strip = "le richieste devono pervenire esclusivamente"
+                if info_display.lower().startswith(prefix_to_strip):
+                    info_display = info_display[len(prefix_to_strip):].strip()
 
                 # Build calendar links
                 cal = build_calendar_links(match_data, match_url)
@@ -346,7 +366,7 @@ def main():
 🎫 <b>Inizio Vendita Libera:</b> {match_data['sale_date']}
 
 ♿ <b>Info Accrediti Disabili:</b>
-🕒 Le richieste devono pervenire esclusivamente {info}{cal_section}
+🕒 Le richieste devono pervenire esclusivamente {info_display}{cal_section}
 
 🔗 <a href='{match_url}'>Link Ufficiale</a>"""
                 
