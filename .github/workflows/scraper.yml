@@ -6,6 +6,10 @@ on:
     - cron: '0 */4 * * *'
   workflow_dispatch: # Allows manual trigger
 
+permissions:
+  contents: write
+  actions: write
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
@@ -29,4 +33,25 @@ jobs:
         GHA_GIST_TOKEN: ${{ secrets.GHA_GIST_TOKEN }}
         GIST_ID: ${{ secrets.GIST_ID }}
       run: python scraper.py
+
+    - name: Keep repository and workflow active
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # 1. Ensure workflow stays explicitly enabled
+        gh api -X PUT "repos/${{ github.repository }}/actions/workflows/scraper.yml/enable" || true
+
+        # 2. Prevent GitHub 60-day inactivity shutdown by pushing a dummy commit if inactive > 45 days
+        LAST_COMMIT_TS=$(git log -1 --format=%ct)
+        NOW_TS=$(date +%s)
+        DAYS_DIFF=$(( (NOW_TS - LAST_COMMIT_TS) / 86400 ))
+        echo "Days since last commit: $DAYS_DIFF"
+        if [ "$DAYS_DIFF" -ge 45 ]; then
+          echo "Repository inactive for $DAYS_DIFF days. Creating keepalive commit..."
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keep scheduled workflows active [skip ci]"
+          git push origin master
+        fi
+
 
