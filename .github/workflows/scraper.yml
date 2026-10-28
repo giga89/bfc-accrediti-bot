@@ -6,6 +6,9 @@ on:
     - cron: '0 */4 * * *'
   workflow_dispatch: # Allows manual trigger
 
+permissions:
+  contents: write
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
@@ -29,3 +32,7 @@ jobs:
         GHA_GIST_TOKEN: ${{ secrets.GHA_GIST_TOKEN }}
         GIST_ID: ${{ secrets.GIST_ID }}
       run: python scraper.py
+
+    - name: Keepalive Workflow
+      uses: gautamkrishnar/keepalive-workflow@v2
+

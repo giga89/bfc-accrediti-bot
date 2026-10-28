@@ -30,11 +30,12 @@ MONTHS_IT = {
     'settembre': 9, 'ottobre': 10, 'novembre': 11, 'dicembre': 12
 }
 
-def parse_italian_datetime(text):
+def parse_italian_datetime(text, default_month=None):
     """
     Try to extract a datetime from an Italian text string like:
       "dalle ore 10 alle ore 17 del 5 marzo"
       "dal 6/3 dalle ore 14"
+      "dalle 17.30 del 30 partirà la vendita libera" (with default_month)
     Returns a datetime object or None.
     """
     if not text:
@@ -43,11 +44,16 @@ def parse_italian_datetime(text):
     year = datetime.now().year
 
     day, month = None, None
+    explicit_year = False
 
     # Pattern: "del 5/3" or "dal 5/3" or "di lunedì 16/03" or "di 5/3"
-    m = re.search(r'(?:del|dal|di)\s+(?:(?:luned|marted|mercoled|gioved|venerd|sabat|domenic)\S*\s+)?(\d{1,2})\s*/\s*(\d{1,2})(?:\s*/\s*\d{2,4})?', t)
+    m = re.search(r'(?:del|dal|di)\s+(?:(?:luned|marted|mercoled|gioved|venerd|sabat|domenic)\S*\s+)?(\d{1,2})\s*/\s*(\d{1,2})(?:\s*/\s*(\d{2,4}))?', t)
     if m:
         day, month = int(m.group(1)), int(m.group(2))
+        if m.group(3):
+            y = int(m.group(3))
+            year = y if y >= 100 else 2000 + y
+            explicit_year = True
 
     # Pattern: "del 5 marzo" or "dal 5 marzo" or "di lunedì 5 marzo"
     if day is None:
@@ -65,18 +71,31 @@ def parse_italian_datetime(text):
             day = int(m.group(1))
             month = MONTHS_IT[m.group(2)]
 
+    # Fallback: just "del 30" when default_month is provided
+    if day is None and default_month is not None:
+        m = re.search(r'(?:del|dal|di)\s+(?:(?:luned|marted|mercoled|gioved|venerd|sabat|domenic)\S*\s+)?(\d{1,2})', t)
+        if m:
+            day = int(m.group(1))
+            month = default_month
+
     if day is None or month is None:
         return None
 
-    # Extract hour: "dalle ore 10" or "ore 10"
-    time_match = re.search(r'(?:dalle?\s+)?(?:ore\s+)(\d{1,2})(?::(\d{2}))?', t)
-    hour = int(time_match.group(1)) if time_match else 10
-    minute = int(time_match.group(2)) if (time_match and time_match.group(2)) else 0
+    # Extract hour: "dalle ore 10", "ore 10:30", "dalle 17.30", "ore 17.30"
+    time_match = re.search(r'(?:(?:dalle|ore)\s+)(\d{1,2})[:.](\d{2})', t)
+    if time_match:
+        hour = int(time_match.group(1))
+        minute = int(time_match.group(2))
+    else:
+        time_match2 = re.search(r'(?:(?:dalle|ore)\s+)(\d{1,2})', t)
+        hour = int(time_match2.group(1)) if time_match2 else 10
+        minute = 0
 
     try:
         dt = datetime(year, month, day, hour, minute)
-        # If the date has already passed this year, try next year
-        if dt < datetime.now() - timedelta(days=1):
+        # In a football season (Aug-May), if current month is in the first half (Jul-Dec)
+        # and match/sale month is in the second half (Jan-Jun), bump year by 1 if not explicitly given
+        if not explicit_year and datetime.now().month >= 7 and month <= 6:
             dt = datetime(year + 1, month, day, hour, minute)
         return dt
     except ValueError:
@@ -99,7 +118,7 @@ def make_gcal_url(title, start_dt, duration_minutes=60, description=""):
     return f"https://calendar.google.com/calendar/render?{params}"
 
 
-def build_calendar_links(match_data, match_url):
+def build_calendar_links(match_data, match_url, default_month=None):
     """
     Build Google Calendar links for:
       1. Disability accreditation window (30 min reminder before opening)
@@ -112,7 +131,7 @@ def build_calendar_links(match_data, match_url):
     # --- Disability accreditation ---
     dis_info = match_data.get("disability_info", "")
     dis_dt = parse_italian_datetime(dis_info)
-    if dis_dt:
+    if dis_dt and dis_dt > datetime.now():
         reminder_dt = dis_dt - timedelta(minutes=30)
         title = f"♿ Accrediti Disabili – {teams}"
         desc = (
@@ -124,8 +143,8 @@ def build_calendar_links(match_data, match_url):
 
     # --- General ticket sale ---
     sale_text = match_data.get("sale_date", "")
-    sale_dt = parse_italian_datetime(sale_text)
-    if sale_dt:
+    sale_dt = parse_italian_datetime(sale_text, default_month=default_month)
+    if sale_dt and sale_dt > datetime.now():
         reminder_dt = sale_dt - timedelta(minutes=30)
         title = f"🎫 Vendita Biglietti – {teams}"
         desc = (
@@ -266,49 +285,47 @@ def check_match_page(url):
 
     raw_text = soup.get_text(separator=' ', strip=True)
 
-    sale_match = re.search(r'(?i)(dalle\s+(?:ore\s+)?\d+.*?vendita\s+.*?(?:aperta\s+a\s+tutti|libera))', raw_text)
-    if sale_match:
-        s = sale_match.group(1)
-        short_s = re.search(r'(?i)(dalle.*?del\s*\d{1,2}(?:/\d{1,2}|\s+[a-z]+))', s)
-        if short_s:
-            match_data["sale_date"] = short_s.group(1).strip().capitalize()
-        else:
-            match_data["sale_date"] = s[:80].capitalize() + "..."
+    months_pattern = '|'.join(MONTHS_IT.keys())
+
+    # 1. Search for explicit vendita libera / aperta a tutti
+    libera_match = re.search(
+        rf'(?i)(dalle\s+(?:ore\s+)?[\d.:]+\s+del\s+\d{{1,2}}(?:/\d{{1,2}}|\s+(?:{months_pattern}))?'
+        rf'[^\n.]{{0,60}}?(?:partir[aà]\s+la\s+vendita\s+libera|vendita\s+(?:libera|è\s+aperta\s+a\s+tutti)|aperta\s+a\s+tutti))',
+        raw_text
+    )
+
+    # 2. Search for prevendita start
+    prev_match = re.search(
+        r'(?i)((?:prevendita|vendita)\s+(?:comincia|inizia|parte|apre)\s+'
+        r'(?:alle\s+ore\s+[\d.:]+\s+)?(?:del\s+)?\d{1,2}/\d{1,2}(?:/\d{2,4})?)',
+        raw_text
+    )
+
+    prev_month = None
+    if prev_match:
+        m_month = re.search(r'(\d{1,2})/(\d{1,2})', prev_match.group(0))
+        if m_month:
+            prev_month = int(m_month.group(2))
+
+    if libera_match:
+        match_data["sale_date"] = libera_match.group(1).strip().capitalize()
+        match_data["sale_month"] = prev_month
+    elif prev_match:
+        match_data["sale_date"] = prev_match.group(1).strip().capitalize()
+        match_data["sale_month"] = prev_month
     else:
-        # Try "prevendita comincia/inizia alle ore X del dd/mm"
-        sale_match_prev = re.search(
-            r'(?i)(?:prevendita|vendita)\s+(?:comincia|inizia|parte|apre)\s+'
-            r'(?:alle\s+ore\s+\d+\s+)?(?:del\s+)?(\d{1,2}/\d{1,2}(?:/\d{2,4})?)',
+        # Fallback to older patterns if neither matched
+        sale_match_inizio = re.search(
+            r'(?i)(inizio\s+(?:della\s+)?(?:prevendita|vendita)\s+'
+            r'(?:è|e)\s+(?:alle\s+ore\s+\d+\s+)?(?:del\s+)?)(\d{1,2}/\d{1,2}(?:/\d{2,4})?)',
             raw_text
         )
-        if sale_match_prev:
-            # Extract a broader context for display
-            full = re.search(
-                r'(?i)((?:prevendita|vendita)\s+(?:comincia|inizia|parte|apre)\s+'
-                r'(?:alle\s+ore\s+\d+\s+)?(?:del\s+)?\d{1,2}/\d{1,2}(?:/\d{2,4})?)',
-                raw_text
-            )
-            if full:
-                match_data["sale_date"] = full.group(1).strip().capitalize()
+        if sale_match_inizio:
+            match_data["sale_date"] = sale_match_inizio.group(1).strip().capitalize()
         else:
-            # Try "inizio della prevendita è alle ore X del dd/mm"
-            sale_match_inizio = re.search(
-                r'(?i)(?:inizio\s+(?:della\s+)?(?:prevendita|vendita)\s+'
-                r'(?:è|e)\s+(?:alle\s+ore\s+\d+\s+)?(?:del\s+)?)(\d{1,2}/\d{1,2}(?:/\d{2,4})?)',
-                raw_text
-            )
-            if sale_match_inizio:
-                full = re.search(
-                    r'(?i)(inizio\s+(?:della\s+)?(?:prevendita|vendita)\s+'
-                    r'(?:è|e)\s+(?:alle\s+ore\s+\d+\s+)?(?:del\s+)?\d{1,2}/\d{1,2}(?:/\d{2,4})?)',
-                    raw_text
-                )
-                if full:
-                    match_data["sale_date"] = full.group(1).strip().capitalize()
-            else:
-                sale_match_alt = re.search(r'(?i)(dal\s+\d{1,2}(?:/\d{1,2}|\s+[a-z]+).*?vendita)', raw_text)
-                if sale_match_alt:
-                    match_data["sale_date"] = sale_match_alt.group(1).strip().capitalize()
+            sale_match_alt = re.search(rf'(?i)(dal\s+\d{{1,2}}(?:/\d{{1,2}}|\s+(?:{months_pattern})).*?vendita)', raw_text)
+            if sale_match_alt:
+                match_data["sale_date"] = sale_match_alt.group(1).strip().capitalize()
     
     disability_match = re.search(r'(?i)(le richieste devono pervenire.*?)(?:\.\s|Si ricorda|$)', raw_text)
     if disability_match:
@@ -350,7 +367,7 @@ def main():
                     info_display = info_display[len(prefix_to_strip):].strip()
 
                 # Build calendar links
-                cal = build_calendar_links(match_data, match_url)
+                cal = build_calendar_links(match_data, match_url, default_month=match_data.get("sale_month"))
                 cal_section = ""
                 if cal["disability_cal"] or cal["sale_cal"]:
                     cal_section = "\n\n📅 <b>Aggiungi al calendario</b> (promemoria 30 min prima):"
